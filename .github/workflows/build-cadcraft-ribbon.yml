@@ -1,0 +1,52 @@
+name: Build CADCraft with ribbon
+
+# Run it by hand: Actions tab > "Build CADCraft with ribbon" > Run workflow.
+# Needs cadcraft-ribbon.patch in the root of this repository.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Rust toolchain for Android
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android
+
+      - name: Check out CADCraft and apply the ribbon patch
+        run: |
+          mkdir -p source
+          git clone https://github.com/storytold/cadcraft.git source/cadcraft
+          git -C source/cadcraft checkout 41d9b5e957b0719c04b9687c4f29088d77153c31
+          git -C source/cadcraft apply --check "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
+          git -C source/cadcraft apply "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
+          git -C source/cadcraft status --short
+
+      - name: Build the APK
+        # The builder fetches its own Android SDK and NDK, so the runner's are not used.
+        run: |
+          unset ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_NDK NDK_HOME
+          bash build.sh -cadcraft
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cadcraft-ribbon-apk
+          path: output/*.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs
+          path: logs/
+          if-no-files-found: ignore
