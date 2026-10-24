@@ -1,0 +1,347 @@
+diff --git a/crates/ui-egui/src/docking.rs b/crates/ui-egui/src/docking.rs
+index c44f8d1..01cdf1a 100644
+--- a/crates/ui-egui/src/docking.rs
++++ b/crates/ui-egui/src/docking.rs
+@@ -285,7 +285,8 @@ impl Workspace {
+ }
+ 
+ fn sync(workspace: &mut Workspace, app: &crate::CadApp) -> Result<(), String> {
+-    workspace.set_visible(Panel::ToolSets, app.ui.show_toolsets)?;
++    // With the ribbon the Tool Sets are not a docked panel: `show_toolsets` shows the ribbon.
++    workspace.set_visible(Panel::ToolSets, app.ui.show_toolsets && !app.ui.ribbon)?;
+     if !app.ui.show_palettes {
+         workspace.set_visible(Panel::Layers, false)?;
+         workspace.set_visible(Panel::Properties, false)?;
+@@ -298,7 +299,9 @@ fn sync(workspace: &mut Workspace, app: &crate::CadApp) -> Result<(), String> {
+ }
+ 
+ fn publish_visibility(app: &mut crate::CadApp, workspace: &Workspace) {
+-    app.ui.show_toolsets = workspace.layout.contains(&Panel::ToolSets);
++    if !app.ui.ribbon {
++        app.ui.show_toolsets = workspace.layout.contains(&Panel::ToolSets);
++    }
+     app.ui.show_palettes = workspace.layout.contains(&Panel::Layers) || workspace.layout.contains(&Panel::Properties);
+ }
+ 
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index 087e5cb..e147b23 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -72,6 +72,12 @@ pub struct UiState {
+ 
+     pub interface_language: i18n::Preference,
+     pub show_toolsets: bool,
++    /// Lay the Tool Sets out as a ribbon across the top of the drawing, like AutoCAD, instead of
++    /// the docked left palette. With the ribbon, `show_toolsets` shows and hides the ribbon.
++    /// On by default on Android, where the left palette takes too much of a narrow screen.
++    pub ribbon: bool,
++    /// Only the ribbon's tab row is shown (a click on a tab opens it again).
++    pub ribbon_collapsed: bool,
+     pub show_palettes: bool,
+     pub show_toolbar: bool,
+     pub show_file_tabs: bool,
+@@ -160,6 +166,8 @@ impl Default for UiState {
+ 
+             interface_language: i18n::Preference::default(),
+             show_toolsets: true,
++            ribbon: cfg!(target_os = "android"),
++            ribbon_collapsed: false,
+             show_palettes: true,
+             show_toolbar: true,
+             show_file_tabs: true,
+@@ -655,11 +663,14 @@ impl CadApp {
+         if self.ui.show_status_bar {
+             chrome::status_bar(self, ui);
+         }
++        let has_doc = !self.session.docs.is_empty() && !self.ui.start_tab;
++        if has_doc && self.ui.ribbon && self.ui.show_toolsets {
++            palettes::ribbon(self, ui);
++        }
+         if self.ui.show_file_tabs {
+             chrome::file_tabs(self, ui);
+         }
+-        let has_doc = !self.session.docs.is_empty() && !self.ui.start_tab;
+-        if has_doc && !self.ui.show_toolsets {
++        if has_doc && !self.ui.show_toolsets && !self.ui.ribbon {
+             palettes::toolsets_strip(self, ui);
+         }
+         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
+diff --git a/crates/ui-egui/src/menus.rs b/crates/ui-egui/src/menus.rs
+index 8a4476e..839eb38 100644
+--- a/crates/ui-egui/src/menus.rs
++++ b/crates/ui-egui/src/menus.rs
+@@ -25,6 +25,8 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
+     ("ui.saveas", "Save As...", &[], None),
+     ("ui.sample", "Open Sample Drawing", &["Help", "Open Sample Drawing"], None),
+     ("ui.toggle.toolsets", "Tool Sets", &["Window", "Tool Sets"], Some("Cmd+3")),
++    ("ui.toggle.ribbon", "Ribbon", &["Window", "Ribbon"], None),
++    ("ui.ribbon.collapse", "Minimize Ribbon", &["Window", "Minimize Ribbon"], None),
+     ("ui.panel.properties", "Properties Inspector", &["Window", "Properties Inspector"], Some("Cmd+1")),
+     ("ui.panel.layers", "Layers Palette", &["Window", "Layers Palette"], None),
+     ("ui.toggle.quickcalc", "QuickCalc", &["Window", "QuickCalc"], Some("Cmd+8")),
+@@ -226,8 +228,21 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
+             app.ui.start_tab = false;
+             Ok(Value::Null)
+         }
++        "ui.toggle.ribbon" => {
++            toggle(&mut app.ui.ribbon, params);
++            app.ui.show_toolsets = true;
++            Ok(Value::Null)
++        }
++        "ui.ribbon.collapse" => {
++            toggle(&mut app.ui.ribbon_collapsed, params);
++            Ok(Value::Null)
++        }
+         "ui.toggle.toolsets" => {
+             if params.get("on").and_then(Value::as_bool) == Some(true) {
++                if app.ui.ribbon {
++                    app.ui.show_toolsets = true;
++                    return Some(Ok(Value::Null));
++                }
+                 return Some(crate::docking::command(app, false, &json!({"operation":"open", "panel":"toolSets"})));
+             }
+             toggle(&mut app.ui.show_toolsets, params);
+diff --git a/crates/ui-egui/src/palettes.rs b/crates/ui-egui/src/palettes.rs
+index 29bedf6..5109754 100644
+--- a/crates/ui-egui/src/palettes.rs
++++ b/crates/ui-egui/src/palettes.rs
+@@ -338,6 +338,138 @@ pub fn toolsets_strip(app: &mut CadApp, ui: &mut egui::Ui) {
+     });
+ }
+ 
++/// Height of the ribbon's tab row.
++const RIBBON_TAB_H: f32 = 24.0;
++/// Height of the ribbon's body: one large icon (or two small ones) and the group's name.
++const RIBBON_BODY_H: f32 = 66.0;
++
++/// The Tool Sets as an AutoCAD-style ribbon across the top of the drawing: the same tabs, groups
++/// and tools as the docked palette, laid out in one scrolling row so the drawing keeps the full
++/// width of the screen. Large tools come first; the small ones follow in columns of two. The
++/// chevron at the right (or a click on the active tab) minimizes it to the tab row.
++pub fn ribbon(app: &mut CadApp, ui: &mut egui::Ui) {
++    let t = Tokens::get();
++    let collapsed = app.ui.ribbon_collapsed;
++    let height = if collapsed { RIBBON_TAB_H } else { RIBBON_TAB_H + RIBBON_BODY_H };
++    let mut clicked: Option<&'static str> = None;
++    let mut new_tab: Option<&'static str> = None;
++    let mut toggle_collapse = false;
++    egui::Panel::top("cc_ribbon").exact_size(height).resizable(false).frame(egui::Frame::NONE.fill(t.panel)).show(ui, |ui| {
++        let r = ui.max_rect();
++        let p = ui.painter().clone();
++        // Tab row.
++        p.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), RIBBON_TAB_H)), 0.0, t.chrome);
++        let mut x = r.left();
++        for name in ["Drafting", "Modeling"] {
++            let w = 92.0;
++            let tr = Rect::from_min_size(pos2(x, r.top()), vec2(w, RIBBON_TAB_H));
++            let active = app.ui.toolset_tab == name;
++            let resp = ui.interact(tr, ui.id().with(("ribbon_tab", name)), Sense::click());
++            p.rect_filled(tr, 0.0, if active && !collapsed { t.tab_active } else { t.chrome });
++            p.text(
++                tr.center(),
++                egui::Align2::CENTER_CENTER,
++                crate::i18n::t(name),
++                egui::FontId::proportional(13.0),
++                if active { t.text } else { t.text_dim },
++            );
++            icons::describe_control(ui, &resp, crate::i18n::t(name), Some(active), true);
++            if resp.clicked() {
++                if active && !collapsed {
++                    // Like AutoCAD: the active tab minimizes the ribbon, any other tab opens it.
++                    toggle_collapse = true;
++                } else {
++                    new_tab = Some(if name == "Drafting" { "Drafting" } else { "Modeling" });
++                    if collapsed {
++                        toggle_collapse = true;
++                    }
++                }
++            }
++            x += w;
++        }
++        let cr = Rect::from_center_size(pos2(r.right() - 16.0, r.top() + RIBBON_TAB_H / 2.0), vec2(16.0, 16.0));
++        let cresp = ui.interact(cr.expand(4.0), ui.id().with("ribbon_collapse"), Sense::click());
++        icons::paint(&p, cr, if collapsed { Icon::ChevronDown } else { Icon::ChevronUp }, false);
++        let label = if collapsed { "Expand Ribbon" } else { "Minimize Ribbon" };
++        icons::describe_control(ui, &cresp, label, None, false);
++        let tip = if collapsed { crate::tl!("Expand Ribbon") } else { crate::tl!("Minimize Ribbon") };
++        if cresp.on_hover_text(tip).clicked() {
++            toggle_collapse = true;
++        }
++        if collapsed {
++            return;
++        }
++        // Body: one row of groups that scrolls sideways when it is wider than the screen.
++        let body = Rect::from_min_max(pos2(r.left(), r.top() + RIBBON_TAB_H), r.max);
++        ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
++            egui::ScrollArea::horizontal()
++                .id_salt("cc_ribbon_scroll")
++                .auto_shrink([false, false])
++                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
++                .show(ui, |ui| {
++                    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
++                    let groups: &[(&str, &[Tool], &[Tool])] = if app.ui.toolset_tab == "Drafting" { DRAFTING } else { MODELING };
++                    let hidden = |cmd: &str| app.ui.hidden_tools.iter().any(|h| h == cmd);
++                    ui.horizontal_top(|ui| {
++                        ui.add_space(4.0);
++                        for (name, large, small) in groups {
++                            let large: Vec<Tool> = large.iter().copied().filter(|(_, cmd, _)| !hidden(cmd)).collect();
++                            let small: Vec<Tool> = small.iter().copied().filter(|(_, cmd, _)| !hidden(cmd)).collect();
++                            if large.is_empty() && small.is_empty() {
++                                continue;
++                            }
++                            let group = ui.vertical(|ui| {
++                                ui.add_space(3.0);
++                                ui.horizontal_top(|ui| {
++                                    ui.spacing_mut().item_spacing = vec2(2.0, 0.0);
++                                    for (icon, cmd, tip) in &large {
++                                        ui.add_enabled_ui(command_known(cmd), |ui| {
++                                            if icons::button(ui, *icon, 36.0, tip, false).clicked() {
++                                                clicked = Some(cmd);
++                                            }
++                                        });
++                                    }
++                                    for column in small.chunks(2) {
++                                        ui.vertical(|ui| {
++                                            ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
++                                            for (icon, cmd, tip) in column {
++                                                ui.add_enabled_ui(command_known(cmd), |ui| {
++                                                    if icons::button(ui, *icon, 21.0, tip, false).clicked() {
++                                                        clicked = Some(cmd);
++                                                    }
++                                                });
++                                            }
++                                        });
++                                    }
++                                });
++                                ui.add_space(2.0);
++                                ui.add(
++                                    egui::Label::new(egui::RichText::new(crate::i18n::t(name).to_string()).size(10.5).color(t.text_dim))
++                                        .selectable(false),
++                                );
++                            });
++                            // Divider between groups.
++                            let gr = group.response.rect;
++                            let x = gr.right() + 5.0;
++                            ui.painter().vline(x, (body.top() + 6.0)..=(body.bottom() - 6.0), Stroke::new(1.0, t.border));
++                            ui.add_space(11.0);
++                        }
++                    });
++                });
++        });
++    });
++    if let Some(tab) = new_tab {
++        app.ui.toolset_tab = tab.into();
++    }
++    if toggle_collapse {
++        app.ui.ribbon_collapsed = !app.ui.ribbon_collapsed;
++    }
++    if let Some(c) = clicked {
++        app.cmd.buffer.clear();
++        app.start(c);
++    }
++}
++
+ pub fn right_palettes(app: &mut CadApp, ui: &mut egui::Ui) {
+     if !app.ui.show_palettes {
+         return;
+diff --git a/crates/ui-egui/tests/it/main.rs b/crates/ui-egui/tests/it/main.rs
+index 2e24515..300c87a 100644
+--- a/crates/ui-egui/tests/it/main.rs
++++ b/crates/ui-egui/tests/it/main.rs
+@@ -28,6 +28,7 @@ mod status_bar_toggles;
+ mod style_dialogs;
+ mod system_cursor;
+ mod text_double_click;
++mod ribbon;
+ mod toolsets_gear;
+ mod toolsets_parametric;
+ mod viewport_double_click_selection;
+diff --git a/crates/ui-egui/tests/it/ribbon.rs b/crates/ui-egui/tests/it/ribbon.rs
+new file mode 100644
+index 0000000..ff01716
+--- /dev/null
++++ b/crates/ui-egui/tests/it/ribbon.rs
+@@ -0,0 +1,83 @@
++//! The ribbon lays the Tool Sets across the top of the drawing instead of down its left side:
++//! the same tools, in one row, and the drawing keeps the full width.
++
++use cadcraft_engine::Session;
++use cadcraft_ui_egui::{CadApp, Services};
++use egui::vec2;
++use egui_kittest::Harness;
++use egui_kittest::kittest::Queryable;
++
++fn harness(ribbon: bool) -> Harness<'static, CadApp> {
++    let mut app = CadApp::new(Session::default(), Services::default());
++    app.ui.in_window_menu = false;
++    app.integrated_titlebar = true;
++    app.ui.ribbon = ribbon;
++    let mut harness = Harness::builder().with_size(vec2(1280.0, 760.0)).build_ui_state(
++        |ui, app: &mut CadApp| {
++            app.logic(&ui.ctx().clone());
++            app.ui(ui);
++        },
++        app,
++    );
++    harness.run_steps(6);
++    harness
++}
++
++#[test]
++fn the_ribbon_replaces_the_left_palette() {
++    let harness = harness(true);
++    assert!(harness.query_by_label("Collapse Tool Sets").is_none(), "no docked Tool Sets palette beside the drawing");
++    assert!(harness.query_by_label("Minimize Ribbon").is_some(), "the ribbon is shown");
++    let line = harness.get_by_label("Line");
++    let tab = harness.get_by_label("Drafting");
++    assert!(line.rect().top() >= tab.rect().bottom() - 1.0, "tools sit below the tab row");
++    assert!(line.rect().left() < 200.0, "the first group starts at the left edge");
++    let modify = harness.get_by_label("Move");
++    assert!(modify.rect().left() > line.rect().left(), "groups follow one another along the row");
++    assert!((modify.rect().center().y - line.rect().center().y).abs() < 60.0, "all groups share one band across the top");
++}
++
++#[test]
++fn the_classic_palette_is_unchanged_without_the_ribbon() {
++    let harness = harness(false);
++    assert!(harness.query_by_label("Collapse Tool Sets").is_some());
++    assert!(harness.query_by_label("Minimize Ribbon").is_none());
++}
++
++#[test]
++fn a_ribbon_tool_starts_its_command() {
++    let mut harness = harness(true);
++    harness.get_by_label("Circle").click();
++    harness.run_steps(4);
++    assert!(harness.state().session.prompting(), "clicking Circle starts CIRCLE, which now asks for its centre");
++}
++
++#[test]
++fn the_ribbon_minimizes_to_its_tabs_and_comes_back() {
++    let mut harness = harness(true);
++    let full = harness.get_by_label("Line").rect().top();
++    harness.get_by_label("Minimize Ribbon").click();
++    harness.run_steps(4);
++    assert!(harness.state().ui.ribbon_collapsed);
++    assert!(harness.query_by_label("Line").is_none(), "only the tab row is left");
++    harness.get_by_label("Modeling").click();
++    harness.run_steps(4);
++    assert!(!harness.state().ui.ribbon_collapsed, "a tab opens the ribbon again");
++    assert_eq!(harness.state().ui.toolset_tab, "Modeling");
++    harness.get_by_label("Drafting").click();
++    harness.run_steps(4);
++    assert!(harness.get_by_label("Line").rect().top() - full < 1.0);
++}
++
++#[test]
++fn window_tool_sets_hides_and_shows_the_ribbon() {
++    let mut harness = harness(true);
++    harness.state_mut().run("ui.toggle.toolsets", serde_json::json!({})).ok();
++    harness.run_steps(4);
++    assert!(!harness.state().ui.show_toolsets);
++    assert!(harness.query_by_label("Minimize Ribbon").is_none());
++    assert!(harness.query_by_label("Expand Tool Sets").is_none(), "no left strip with the ribbon either");
++    harness.state_mut().run("ui.toggle.toolsets", serde_json::json!({"on": true})).ok();
++    harness.run_steps(4);
++    assert!(harness.query_by_label("Minimize Ribbon").is_some());
++}
