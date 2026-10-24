@@ -17,6 +17,12 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
+      - name: Tools the builder needs (Pillow and ImageMagick make the launcher icons)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pil imagemagick librsvg2-bin libmagickcore-6.q16-6-extra
+          python3 -c "import PIL; print('Pillow', PIL.__version__)"
+
       - name: Rust toolchain for Android
         run: |
           rustup toolchain install stable --profile minimal
