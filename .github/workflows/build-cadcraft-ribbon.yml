@@ -59,6 +59,17 @@ jobs:
           sed -i 's/\.into_inner()\.as_bytes()/.into_inner()/g' "$f"
           grep -n "into_inner" "$f"
 
+      - name: Tambah perintah EXTRUDE (extrude.rs di root repo)
+        # Menyalin extrude.rs ke engine lalu mendaftarkannya di cmd/mod.rs.
+        run: |
+          cp "$GITHUB_WORKSPACE/extrude.rs" source/cadcraft/crates/engine/src/cmd/extrude.rs
+          m=source/cadcraft/crates/engine/src/cmd/mod.rs
+          grep -q '^mod extrude;' "$m" || sed -i 's/^mod edit;$/mod edit;\nmod extrude;/' "$m"
+          grep -q 'extrude::specs' "$m" || sed -i 's/^\( *\)v\.extend(draw2::specs());$/\1v.extend(draw2::specs());\n\1v.extend(extrude::specs());/' "$m"
+          grep -n "extrude" "$m"
+          grep -q '^mod extrude;' "$m"
+          grep -q 'extrude::specs' "$m"
+
       - name: Shim cargo-ndk (tambah field Services di wrapper Android)
         # Wrapper apps/cadcraft-android dibuat otomatis oleh build.sh dan belum
         # mengisi field baru Services (no_file_system, pick_lisp). Shim ini
