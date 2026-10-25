@@ -37,9 +37,14 @@ jobs:
           git -C source/cadcraft apply --check "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
           git -C source/cadcraft apply "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
           git -C source/cadcraft status --short
-          # Kunci versi persis agar cargo tidak menurunkannya saat lockfile dihitung ulang
-          sed -i 's/^harfrust = "0.14"/harfrust = "=0.14.0"/' source/cadcraft/Cargo.toml
-          sed -i 's/^\(rstar = { version = \)"0.13"/\1"=0.13.0"/' source/cadcraft/crates/engine/Cargo.toml
+
+      - name: Sesuaikan svg_read.rs dengan quick-xml 0.41
+        # build.sh menurunkan quick-xml 0.42 -> 0.41. Di 0.41 into_inner() sudah
+        # mengembalikan &[u8], jadi .as_bytes() harus dihapus agar bisa dikompilasi.
+        run: |
+          f=source/cadcraft/crates/io/src/svg_read.rs
+          sed -i 's/\.into_inner()\.as_bytes()/.into_inner()/g' "$f"
+          grep -n "into_inner" "$f"
 
       - name: Diagnostics (versions the build will use)
         run: |
