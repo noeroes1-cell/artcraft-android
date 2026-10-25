@@ -37,6 +37,9 @@ jobs:
           git -C source/cadcraft apply --check "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
           git -C source/cadcraft apply "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
           git -C source/cadcraft status --short
+          # Kunci versi persis agar cargo tidak menurunkannya saat lockfile dihitung ulang
+          sed -i 's/^harfrust = "0.14"/harfrust = "=0.14.0"/' source/cadcraft/Cargo.toml
+          sed -i 's/^\(rstar = { version = \)"0.13"/\1"=0.13.0"/' source/cadcraft/crates/engine/Cargo.toml
 
       - name: Diagnostics (versions the build will use)
         run: |
