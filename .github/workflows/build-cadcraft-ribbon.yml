@@ -38,6 +38,14 @@ jobs:
           git -C source/cadcraft apply "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
           git -C source/cadcraft status --short
 
+      - name: Diagnostics (versions the build will use)
+        run: |
+          rustc --version; cargo --version
+          git -C source/cadcraft log -1 --oneline
+          grep -n "harfrust" source/cadcraft/Cargo.toml || true
+          grep -n 'name = "harfrust"' -A1 source/cadcraft/Cargo.lock || true
+          git -C source/cadcraft status --short
+
       - name: Build the APK
         # The builder fetches its own Android SDK and NDK, so the runner's are not used.
         run: |
