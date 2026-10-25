@@ -50,6 +50,8 @@ jobs:
         # The builder fetches its own Android SDK and NDK, so the runner's are not used.
         run: |
           unset ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_NDK NDK_HOME
+          # Jangan turunkan versi crate demi MSRV (harfrust 0.14 -> 0.13.3 merusak cadcraft-fonts)
+          export CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=allow
           bash build.sh -cadcraft
 
       - uses: actions/upload-artifact@v4
