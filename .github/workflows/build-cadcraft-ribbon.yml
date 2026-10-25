@@ -59,6 +59,27 @@ jobs:
           sed -i 's/\.into_inner()\.as_bytes()/.into_inner()/g' "$f"
           grep -n "into_inner" "$f"
 
+      - name: Shim cargo-ndk (tambah field Services di wrapper Android)
+        # Wrapper apps/cadcraft-android dibuat otomatis oleh build.sh dan belum
+        # mengisi field baru Services (no_file_system, pick_lisp). Shim ini
+        # menambahkannya tepat sebelum cargo-ndk mengompilasi, lalu menjalankan
+        # cargo-ndk yang asli.
+        run: |
+          cargo install cargo-ndk --locked
+          mkdir -p "$RUNNER_TEMP/shim"
+          cat > "$RUNNER_TEMP/shim/cargo-ndk" <<'EOF'
+          #!/usr/bin/env bash
+          f="$GITHUB_WORKSPACE/source/cadcraft/apps/cadcraft-android/src/lib.rs"
+          if [ -f "$f" ] && ! grep -q 'no_file_system' "$f"; then
+            sed -i 's/^\([[:space:]]*\)Services {$/\1Services {\n\1    no_file_system: false,\n\1    pick_lisp: None,/' "$f"
+            echo "[shim] Services di $f diberi no_file_system dan pick_lisp"
+            grep -n -A3 'Services {' "$f" | head -20
+          fi
+          exec "$HOME/.cargo/bin/cargo-ndk" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/shim/cargo-ndk"
+          echo "$RUNNER_TEMP/shim" >> "$GITHUB_PATH"
+
       - name: Lihat bagian build.sh yang mengubah Cargo.toml
         run: grep -n "harfrust\|rstar\|quick-xml" build.sh || true
 
