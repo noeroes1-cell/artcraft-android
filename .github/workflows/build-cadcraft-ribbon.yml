@@ -38,6 +38,19 @@ jobs:
           git -C source/cadcraft apply "$GITHUB_WORKSPACE/cadcraft-ribbon.patch"
           git -C source/cadcraft status --short
 
+      - name: Kunci versi crate agar tidak diturunkan oleh build.sh
+        # build.sh "memperbaiki" Cargo.toml dengan mengganti teks persis
+        # harfrust = "0.14" dan rstar version = "0.13". Dengan pin "=" teks itu
+        # tidak cocok lagi, jadi versi yang benar (yang dipakai kode) tetap dipakai.
+        run: |
+          cd source/cadcraft
+          sed -i 's/harfrust = "0.14"/harfrust = "=0.14.0"/' Cargo.toml
+          sed -i 's/rstar = { version = "0.13", default-features = false }/rstar = { version = "=0.13.0", default-features = false }/' crates/engine/Cargo.toml
+          grep -n "harfrust" Cargo.toml
+          grep -n "rstar" crates/engine/Cargo.toml
+          grep -q '"=0.14.0"' Cargo.toml
+          grep -q '"=0.13.0"' crates/engine/Cargo.toml
+
       - name: Sesuaikan svg_read.rs dengan quick-xml 0.41
         # build.sh menurunkan quick-xml 0.42 -> 0.41. Di 0.41 into_inner() sudah
         # mengembalikan &[u8], jadi .as_bytes() harus dihapus agar bisa dikompilasi.
@@ -45,6 +58,9 @@ jobs:
           f=source/cadcraft/crates/io/src/svg_read.rs
           sed -i 's/\.into_inner()\.as_bytes()/.into_inner()/g' "$f"
           grep -n "into_inner" "$f"
+
+      - name: Lihat bagian build.sh yang mengubah Cargo.toml
+        run: grep -n "harfrust\|rstar\|quick-xml" build.sh || true
 
       - name: Diagnostics (versions the build will use)
         run: |
